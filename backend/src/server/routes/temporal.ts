@@ -1,10 +1,10 @@
-import { insert_fact, update_fact, invalidate_fact, delete_fact, apply_confidence_decay, get_active_facts_count, get_total_facts_count } from '../../temporal_graph/store'
-import { query_facts_at_time, get_current_fact, query_facts_in_range, search_facts, get_facts_by_subject, get_related_facts } from '../../temporal_graph/query'
+import { insert_fact, update_fact, invalidate_fact, delete_fact, apply_confidence_decay, get_active_facts_count, get_total_facts_count, insert_edge } from '../../temporal_graph/store'
+import { query_facts_at_time, get_current_fact, query_facts_in_range, search_facts, get_facts_by_subject, get_related_facts, get_reverse_related_facts } from '../../temporal_graph/query'
 import { get_subject_timeline, get_predicate_timeline, get_changes_in_window, compare_time_points, get_change_frequency, get_volatile_facts } from '../../temporal_graph/timeline'
 
 export const create_temporal_fact = async (req: any, res: any) => {
     try {
-        const { subject, predicate, object, valid_from, confidence, metadata } = req.body
+        const { subject, predicate, object, valid_from, confidence, metadata, user_id } = req.body
 
         if (!subject || !predicate || !object) {
             return res.status(400).json({ error: 'Missing required fields: subject, predicate, object' })
@@ -13,7 +13,7 @@ export const create_temporal_fact = async (req: any, res: any) => {
         const valid_from_date = valid_from ? new Date(valid_from) : new Date()
         const conf = confidence !== undefined ? Math.max(0, Math.min(1, confidence)) : 1.0
 
-        const id = await insert_fact(subject, predicate, object, valid_from_date, conf, metadata)
+        const id = await insert_fact(subject, predicate, object, valid_from_date, conf, metadata, user_id)
 
         res.json({
             id,
@@ -318,6 +318,83 @@ export const get_most_volatile = async (req: any, res: any) => {
     }
 }
 
+export const create_temporal_edge = async (req: any, res: any) => {
+    try {
+        const { source_id, target_id, relation_type, valid_from, weight, metadata, user_id } = req.body
+        if (!source_id || !target_id || !relation_type) {
+            return res.status(400).json({ error: 'Missing required fields: source_id, target_id, relation_type' })
+        }
+        const valid_from_date = valid_from ? new Date(valid_from) : new Date()
+        const w = weight !== undefined ? weight : 1.0
+        const id = await insert_edge(source_id, target_id, relation_type, valid_from_date, w, metadata, user_id)
+        res.status(201).json({ id, source_id, target_id, relation_type, weight: w, message: 'Edge created successfully' })
+    } catch (error) {
+        console.error('[TEMPORAL API] Error creating edge:', error)
+        res.status(500).json({ error: 'Failed to create edge' })
+    }
+}
+
+export const get_related_facts_handler = async (req: any, res: any) => {
+    try {
+        const { factId } = req.params
+        const { relation_type, at, user_id } = req.query
+        const at_date = at ? new Date(at) : undefined
+        const results = await get_related_facts(factId, relation_type, at_date, user_id)
+        res.json({ fact_id: factId, related: results, count: results.length })
+    } catch (error) {
+        console.error('[TEMPORAL API] Error getting related facts:', error)
+        res.status(500).json({ error: 'Failed to get related facts' })
+    }
+}
+
+export const get_reverse_related_facts_handler = async (req: any, res: any) => {
+    try {
+        const { factId } = req.params
+        const { relation_type, at, user_id } = req.query
+        const at_date = at ? new Date(at) : undefined
+        const results = await get_reverse_related_facts(factId, relation_type, at_date, user_id)
+        res.json({ fact_id: factId, related: results, count: results.length })
+    } catch (error) {
+        console.error('[TEMPORAL API] Error getting reverse related facts:', error)
+        res.status(500).json({ error: 'Failed to get reverse related facts' })
+    }
+}
+
+export const get_facts_by_user = async (req: any, res: any) => {
+    try {
+        const { userId } = req.params
+        const { active_only } = req.query
+        const now = Date.now()
+        let sql: string
+        let params: any[]
+        if (active_only !== 'false') {
+            sql = `SELECT * FROM temporal_facts WHERE user_id = ? AND (valid_to IS NULL OR valid_to >= ?) ORDER BY valid_from DESC`
+            params = [userId, now]
+        } else {
+            sql = `SELECT * FROM temporal_facts WHERE user_id = ? ORDER BY valid_from DESC`
+            params = [userId]
+        }
+        const { all_async } = await import('../../core/db')
+        const rows = await all_async(sql, params)
+        const facts = rows.map((row: any) => ({
+            id: row.id,
+            subject: row.subject,
+            predicate: row.predicate,
+            object: row.object,
+            valid_from: row.valid_from,
+            valid_to: row.valid_to,
+            confidence: row.confidence,
+            last_updated: row.last_updated,
+            metadata: row.metadata ? JSON.parse(row.metadata) : undefined,
+            user_id: row.user_id
+        }))
+        res.json({ user_id: userId, facts, count: facts.length })
+    } catch (error) {
+        console.error('[TEMPORAL API] Error getting facts by user:', error)
+        res.status(500).json({ error: 'Failed to get facts by user' })
+    }
+}
+
 export function temporal(app: any) {
     app.post('/api/temporal/fact', create_temporal_fact)
     app.get('/api/temporal/fact', get_temporal_fact)
@@ -332,4 +409,9 @@ export function temporal(app: any) {
     app.get('/api/temporal/stats', get_temporal_stats)
     app.post('/api/temporal/decay', apply_decay)
     app.get('/api/temporal/volatile', get_most_volatile)
+
+    app.post('/api/temporal/edge', create_temporal_edge)
+    app.get('/api/temporal/related/:factId', get_related_facts_handler)
+    app.get('/api/temporal/related-reverse/:factId', get_reverse_related_facts_handler)
+    app.get('/api/temporal/facts-by-user/:userId', get_facts_by_user)
 }

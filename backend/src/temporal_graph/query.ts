@@ -9,7 +9,8 @@ export const query_facts_at_time = async (
     predicate?: string,
     object?: string,
     at: Date = new Date(),
-    min_confidence: number = 0.1
+    min_confidence: number = 0.1,
+    user_id?: string
 ): Promise<TemporalFact[]> => {
     const timestamp = at.getTime()
     const conditions: string[] = []
@@ -37,6 +38,11 @@ export const query_facts_at_time = async (
     if (min_confidence > 0) {
         conditions.push('confidence >= ?')
         params.push(min_confidence)
+    }
+
+    if (user_id) {
+        conditions.push('user_id = ?')
+        params.push(user_id)
     }
 
     const sql = `
@@ -184,29 +190,39 @@ export const find_conflicting_facts = async (
 export const get_facts_by_subject = async (
     subject: string,
     at?: Date,
-    include_historical: boolean = false
+    include_historical: boolean = false,
+    user_id?: string
 ): Promise<TemporalFact[]> => {
     let sql: string
     let params: any[]
 
     if (include_historical) {
+        const conditions = ['subject = ?']
+        params = [subject]
+        if (user_id) {
+            conditions.push('user_id = ?')
+            params.push(user_id)
+        }
         sql = `
             SELECT id, subject, predicate, object, valid_from, valid_to, confidence, last_updated, metadata
             FROM temporal_facts
-            WHERE subject = ?
+            WHERE ${conditions.join(' AND ')}
             ORDER BY predicate ASC, valid_from DESC
         `
-        params = [subject]
     } else {
         const timestamp = at ? at.getTime() : Date.now()
+        const conditions = ['subject = ?', '(valid_from <= ? AND (valid_to IS NULL OR valid_to >= ?))']
+        params = [subject, timestamp, timestamp]
+        if (user_id) {
+            conditions.push('user_id = ?')
+            params.push(user_id)
+        }
         sql = `
             SELECT id, subject, predicate, object, valid_from, valid_to, confidence, last_updated, metadata
             FROM temporal_facts
-            WHERE subject = ?
-            AND (valid_from <= ? AND (valid_to IS NULL OR valid_to >= ?))
+            WHERE ${conditions.join(' AND ')}
             ORDER BY predicate ASC, confidence DESC
         `
-        params = [subject, timestamp, timestamp]
     }
 
     const rows = await all_async(sql, params)
@@ -227,21 +243,28 @@ export const get_facts_by_subject = async (
 export const search_facts = async (
     pattern: string,
     field: 'subject' | 'predicate' | 'object' = 'subject',
-    at?: Date
+    at?: Date,
+    user_id?: string
 ): Promise<TemporalFact[]> => {
     const timestamp = at ? at.getTime() : Date.now()
     const search_pattern = `%${pattern}%`
+    const conditions = [`${field} LIKE ?`, '(valid_from <= ? AND (valid_to IS NULL OR valid_to >= ?))']
+    const params: any[] = [search_pattern, timestamp, timestamp]
+
+    if (user_id) {
+        conditions.push('user_id = ?')
+        params.push(user_id)
+    }
 
     const sql = `
         SELECT id, subject, predicate, object, valid_from, valid_to, confidence, last_updated, metadata
         FROM temporal_facts
-        WHERE ${field} LIKE ?
-        AND (valid_from <= ? AND (valid_to IS NULL OR valid_to >= ?))
+        WHERE ${conditions.join(' AND ')}
         ORDER BY confidence DESC, valid_from DESC
         LIMIT 100
     `
 
-    const rows = await all_async(sql, [search_pattern, timestamp, timestamp])
+    const rows = await all_async(sql, params)
     return rows.map(row => ({
         id: row.id,
         subject: row.subject,
@@ -259,7 +282,8 @@ export const search_facts = async (
 export const get_related_facts = async (
     fact_id: string,
     relation_type?: string,
-    at?: Date
+    at?: Date,
+    user_id?: string
 ): Promise<Array<{ fact: TemporalFact; relation: string; weight: number }>> => {
     const timestamp = at ? at.getTime() : Date.now()
     const conditions = ['(e.valid_from <= ? AND (e.valid_to IS NULL OR e.valid_to >= ?))']
@@ -270,11 +294,64 @@ export const get_related_facts = async (
         params.push(relation_type)
     }
 
+    if (user_id) {
+        conditions.push('e.user_id = ?')
+        params.push(user_id)
+    }
+
     const sql = `
         SELECT f.*, e.relation_type, e.weight
         FROM temporal_edges e
         JOIN temporal_facts f ON e.target_id = f.id
         WHERE e.source_id = ?
+        AND ${conditions.join(' AND ')}
+        AND (f.valid_from <= ? AND (f.valid_to IS NULL OR f.valid_to >= ?))
+        ORDER BY e.weight DESC, f.confidence DESC
+    `
+
+    const rows = await all_async(sql, [fact_id, ...params, timestamp, timestamp])
+    return rows.map(row => ({
+        fact: {
+            id: row.id,
+            subject: row.subject,
+            predicate: row.predicate,
+            object: row.object,
+            valid_from: new Date(row.valid_from),
+            valid_to: row.valid_to ? new Date(row.valid_to) : null,
+            confidence: row.confidence,
+            last_updated: new Date(row.last_updated),
+            metadata: row.metadata ? JSON.parse(row.metadata) : undefined
+        },
+        relation: row.relation_type,
+        weight: row.weight
+    }))
+}
+
+export const get_reverse_related_facts = async (
+    fact_id: string,
+    relation_type?: string,
+    at?: Date,
+    user_id?: string
+): Promise<Array<{ fact: TemporalFact; relation: string; weight: number }>> => {
+    const timestamp = at ? at.getTime() : Date.now()
+    const conditions = ['(e.valid_from <= ? AND (e.valid_to IS NULL OR e.valid_to >= ?))']
+    const params: any[] = [timestamp, timestamp]
+
+    if (relation_type) {
+        conditions.push('e.relation_type = ?')
+        params.push(relation_type)
+    }
+
+    if (user_id) {
+        conditions.push('e.user_id = ?')
+        params.push(user_id)
+    }
+
+    const sql = `
+        SELECT f.*, e.relation_type, e.weight
+        FROM temporal_edges e
+        JOIN temporal_facts f ON e.source_id = f.id
+        WHERE e.target_id = ?
         AND ${conditions.join(' AND ')}
         AND (f.valid_from <= ? AND (f.valid_to IS NULL OR f.valid_to >= ?))
         ORDER BY e.weight DESC, f.confidence DESC

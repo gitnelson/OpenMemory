@@ -21,3 +21,6 @@ exports
 *.vsix
 __pycache__
 test
+# Local .env backups — never commit; a public fork makes these world-readable.
+.env.bak*
+.env.*.bak

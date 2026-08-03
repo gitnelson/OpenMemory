@@ -61,6 +61,38 @@ const migrations: Migration[] = [
       )`,
         ],
     },
+    {
+        version: "1.3.0",
+        desc: "Fix waypoints PK for many-to-many, add user_id to temporal tables",
+        sqlite: [
+            `CREATE TABLE IF NOT EXISTS waypoints_v2 (
+            src_id TEXT NOT NULL, dst_id TEXT NOT NULL,
+            user_id TEXT NOT NULL DEFAULT 'anonymous',
+            weight REAL NOT NULL, created_at INTEGER, updated_at INTEGER,
+            PRIMARY KEY(src_id, dst_id, user_id)
+        )`,
+            `INSERT OR IGNORE INTO waypoints_v2 SELECT src_id, dst_id, COALESCE(user_id,'anonymous'), weight, created_at, updated_at FROM waypoints`,
+            `DROP TABLE waypoints`,
+            `ALTER TABLE waypoints_v2 RENAME TO waypoints`,
+            `CREATE INDEX IF NOT EXISTS idx_waypoints_src ON waypoints(src_id)`,
+            `CREATE INDEX IF NOT EXISTS idx_waypoints_dst ON waypoints(dst_id)`,
+            `CREATE INDEX IF NOT EXISTS idx_waypoints_user ON waypoints(user_id)`,
+            `ALTER TABLE temporal_facts ADD COLUMN user_id TEXT NOT NULL DEFAULT 'anonymous'`,
+            `CREATE INDEX IF NOT EXISTS idx_temporal_user ON temporal_facts(user_id)`,
+            `CREATE INDEX IF NOT EXISTS idx_temporal_user_subject ON temporal_facts(user_id, subject)`,
+            `ALTER TABLE temporal_edges ADD COLUMN user_id TEXT NOT NULL DEFAULT 'anonymous'`,
+            `CREATE INDEX IF NOT EXISTS idx_edges_user ON temporal_edges(user_id)`,
+        ],
+        postgres: [
+            `ALTER TABLE {w} DROP CONSTRAINT IF EXISTS waypoints_pkey`,
+            `ALTER TABLE {w} ADD PRIMARY KEY (src_id, dst_id, user_id)`,
+            `ALTER TABLE temporal_facts ADD COLUMN IF NOT EXISTS user_id TEXT NOT NULL DEFAULT 'anonymous'`,
+            `CREATE INDEX IF NOT EXISTS idx_temporal_user ON temporal_facts(user_id)`,
+            `CREATE INDEX IF NOT EXISTS idx_temporal_user_subject ON temporal_facts(user_id, subject)`,
+            `ALTER TABLE temporal_edges ADD COLUMN IF NOT EXISTS user_id TEXT NOT NULL DEFAULT 'anonymous'`,
+            `CREATE INDEX IF NOT EXISTS idx_edges_user ON temporal_edges(user_id)`,
+        ],
+    },
 ];
 
 async function get_db_version_sqlite(
@@ -127,17 +159,21 @@ async function run_sqlite_migration(
 ): Promise<void> {
     log(`Running migration: ${m.version} - ${m.desc}`);
 
-    const has_user_id = await check_column_exists_sqlite(
-        db,
-        "memories",
-        "user_id",
-    );
-    if (has_user_id) {
-        log(
-            `Migration ${m.version} already applied (user_id exists), skipping`,
-        );
-        await set_db_version_sqlite(db, m.version);
-        return;
+    // Version-specific already-applied detection
+    if (m.version === "1.2.0") {
+        const has_user_id = await check_column_exists_sqlite(db, "memories", "user_id");
+        if (has_user_id) {
+            log(`Migration ${m.version} already applied (user_id exists on memories), skipping`);
+            await set_db_version_sqlite(db, m.version);
+            return;
+        }
+    } else if (m.version === "1.3.0") {
+        const has_temporal_user_id = await check_column_exists_sqlite(db, "temporal_facts", "user_id");
+        if (has_temporal_user_id) {
+            log(`Migration ${m.version} already applied (user_id exists on temporal_facts), skipping`);
+            await set_db_version_sqlite(db, m.version);
+            return;
+        }
     }
 
     for (const sql of m.sqlite) {
@@ -213,14 +249,22 @@ async function run_pg_migration(pool: Pool, m: Migration): Promise<void> {
 
     const sc = process.env.OM_PG_SCHEMA || "public";
     const mt = process.env.OM_PG_TABLE || "openmemory_memories";
-    const has_user_id = await check_column_exists_pg(pool, mt, "user_id");
 
-    if (has_user_id) {
-        log(
-            `Migration ${m.version} already applied (user_id exists), skipping`,
-        );
-        await set_db_version_pg(pool, m.version);
-        return;
+    // Version-specific already-applied detection
+    if (m.version === "1.2.0") {
+        const has_user_id = await check_column_exists_pg(pool, mt, "user_id");
+        if (has_user_id) {
+            log(`Migration ${m.version} already applied (user_id exists on memories), skipping`);
+            await set_db_version_pg(pool, m.version);
+            return;
+        }
+    } else if (m.version === "1.3.0") {
+        const has_temporal_user_id = await check_column_exists_pg(pool, "temporal_facts", "user_id");
+        if (has_temporal_user_id) {
+            log(`Migration ${m.version} already applied (user_id exists on temporal_facts), skipping`);
+            await set_db_version_pg(pool, m.version);
+            return;
+        }
     }
 
     const replacements: Record<string, string> = {

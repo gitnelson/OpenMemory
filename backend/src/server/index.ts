@@ -10,6 +10,7 @@ import {
 import { start_reflection } from "../memory/reflect";
 import { start_user_summary_reflection } from "../memory/user_summary";
 import { sendTelemetry } from "../core/telemetry";
+import { run_migrations } from "../core/migrate";
 import { req_tracker_mw } from "./routes/dashboard";
 
 const ASC = `   ____                   __  __                                 
@@ -62,6 +63,12 @@ app.use(authenticate_api_request);
 if (process.env.OM_LOG_AUTH === "true") {
     app.use(log_authenticated_request);
 }
+
+run_migrations().then(() => {
+    console.log("[INIT] Migrations check complete");
+}).catch((err) => {
+    console.error("[INIT] Migration failed:", err);
+});
 
 routes(app);
 

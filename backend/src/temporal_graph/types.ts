@@ -8,6 +8,7 @@ export interface TemporalFact {
     confidence: number
     last_updated: Date
     metadata?: Record<string, any>
+    user_id?: string
 }
 
 export interface TemporalEdge {
@@ -19,6 +20,7 @@ export interface TemporalEdge {
     valid_to: Date | null
     weight: number
     metadata?: Record<string, any>
+    user_id?: string
 }
 
 export interface TimelineEntry {

@@ -151,7 +151,7 @@ if (is_pg) {
             `create table if not exists ${v}(id uuid,sector text,user_id text,v bytea,dim integer not null,primary key(id,sector))`,
         );
         await pg.query(
-            `create table if not exists ${w}(src_id text primary key,dst_id text not null,user_id text,weight double precision not null,created_at bigint,updated_at bigint)`,
+            `create table if not exists ${w}(src_id text not null,dst_id text not null,user_id text not null default 'anonymous',weight double precision not null,created_at bigint,updated_at bigint,primary key(src_id,dst_id,user_id))`,
         );
         await pg.query(
             `create table if not exists ${l}(id text primary key,model text,status text,ts bigint,err text)`,
@@ -317,7 +317,7 @@ if (is_pg) {
         ins_waypoint: {
             run: (...p) =>
                 run_async(
-                    `insert into ${w}(src_id,dst_id,user_id,weight,created_at,updated_at) values($1,$2,$3,$4,$5,$6) on conflict(src_id) do update set dst_id=excluded.dst_id,user_id=excluded.user_id,weight=excluded.weight,updated_at=excluded.updated_at`,
+                    `insert into ${w}(src_id,dst_id,user_id,weight,created_at,updated_at) values($1,$2,$3,$4,$5,$6) on conflict(src_id,dst_id,user_id) do update set weight=excluded.weight,updated_at=excluded.updated_at`,
                     p,
                 ),
         },
@@ -429,7 +429,7 @@ if (is_pg) {
             `create table if not exists vectors(id text not null,sector text not null,user_id text,v blob not null,dim integer not null,primary key(id,sector))`,
         );
         db.run(
-            `create table if not exists waypoints(src_id text,dst_id text not null,user_id text,weight real not null,created_at integer,updated_at integer,primary key(src_id,user_id))`,
+            `create table if not exists waypoints(src_id text not null,dst_id text not null,user_id text not null default 'anonymous',weight real not null,created_at integer,updated_at integer,primary key(src_id,dst_id,user_id))`,
         );
         db.run(
             `create table if not exists embed_logs(id text primary key,model text,status text,ts integer,err text)`,
@@ -441,10 +441,10 @@ if (is_pg) {
             `create table if not exists stats(id integer primary key autoincrement,type text not null,count integer default 1,ts integer not null)`,
         );
         db.run(
-            `create table if not exists temporal_facts(id text primary key,subject text not null,predicate text not null,object text not null,valid_from integer not null,valid_to integer,confidence real not null check(confidence >= 0 and confidence <= 1),last_updated integer not null,metadata text,unique(subject,predicate,object,valid_from))`,
+            `create table if not exists temporal_facts(id text primary key,subject text not null,predicate text not null,object text not null,valid_from integer not null,valid_to integer,confidence real not null check(confidence >= 0 and confidence <= 1),last_updated integer not null,metadata text,user_id text not null default 'anonymous',unique(subject,predicate,object,valid_from))`,
         );
         db.run(
-            `create table if not exists temporal_edges(id text primary key,source_id text not null,target_id text not null,relation_type text not null,valid_from integer not null,valid_to integer,weight real not null,metadata text,foreign key(source_id) references temporal_facts(id),foreign key(target_id) references temporal_facts(id))`,
+            `create table if not exists temporal_edges(id text primary key,source_id text not null,target_id text not null,relation_type text not null,valid_from integer not null,valid_to integer,weight real not null,metadata text,user_id text not null default 'anonymous',foreign key(source_id) references temporal_facts(id),foreign key(target_id) references temporal_facts(id))`,
         );
         db.run(
             "create index if not exists idx_memories_sector on memories(primary_sector)",
