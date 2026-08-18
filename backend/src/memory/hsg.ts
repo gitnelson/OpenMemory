@@ -1006,6 +1006,25 @@ export async function run_decay_process(): Promise<{
     if (d > 0) await log_maint_op("decay", d);
     return { processed: p, decayed: d };
 }
+// AESIR LOCAL PATCH 2026-08-17 — see the note inside add_hsg_memory.
+function sha256_hex(text: string): string {
+    return crypto.createHash("sha256").update(text, "utf8").digest("hex");
+}
+
+/** The raw-content SHA stamped into a row's meta at insert, or null when the row
+ *  predates this patch or its meta is unparseable. Null never equals a hash, so an
+ *  unknown row is treated as "not a duplicate" — the safe direction. */
+function meta_content_sha(meta: unknown): string | null {
+    if (!meta) return null;
+    try {
+        const parsed = typeof meta === "string" ? JSON.parse(meta) : meta;
+        const sha = (parsed as any)?.__content_sha256;
+        return typeof sha === "string" ? sha : null;
+    } catch {
+        return null;
+    }
+}
+
 export async function add_hsg_memory(
     content: string,
     tags?: string,
@@ -1019,8 +1038,36 @@ export async function add_hsg_memory(
     deduplicated?: boolean;
 }> {
     const simhash = compute_simhash(content);
+    const content_sha = sha256_hex(content);
     const existing = await q.get_mem_by_simhash.get(simhash);
-    if (existing && hamming_dist(simhash, existing.simhash) <= 3) {
+    // AESIR LOCAL PATCH 2026-08-17 — dedupe must PROVE identity, not infer it.
+    //
+    // simhash alone was discarding real memories. compute_simhash() hashes
+    // canonical_token_set(content): a frequency-blind SET of tokens over the whole
+    // document. Two long documents from the same author on the same project share
+    // nearly all vocabulary, so their token sets converge regardless of subject —
+    // observed live, a fixed-price RFP audit collided with a three-month-old
+    // system-brainstorm note and the RFP audit was destroyed. The caller got HTTP
+    // 200, `deduplicated: true`, and the id of the OTHER memory, so nothing
+    // upstack could tell a discard from a write. Nine of twenty-five sessions were
+    // being eaten this way.
+    //
+    // The simhash lookup stays as the INDEX — it is `where simhash=$1`, so it is a
+    // cheap exact-bucket probe. What is added is proof: same user, and a SHA-256 of
+    // the raw content that matches. Note the stored `content` column cannot be used
+    // for this: it holds extract_essence(content), a summary, so comparing raw
+    // content against it never matches. The hash is written into `meta` at insert
+    // (no schema change) as __content_sha256.
+    //
+    // Records written before this patch have no __content_sha256 and therefore
+    // never dedupe. That is the deliberate direction to fail in: the cost is a
+    // duplicate row, and the cost of the other direction is silent data loss.
+    if (
+        existing &&
+        hamming_dist(simhash, existing.simhash) <= 3 &&
+        (existing.user_id || "anonymous") === (user_id || "anonymous") &&
+        meta_content_sha(existing.meta) === content_sha
+    ) {
         const now = Date.now();
         const boosted_sal = Math.min(1, existing.salience + 0.15);
         await q.upd_seen.run(existing.id, now, boosted_sal, now);
@@ -1068,7 +1115,8 @@ export async function add_hsg_memory(
             simhash,
             classification.primary,
             tags || null,
-            JSON.stringify(metadata || {}),
+            // __content_sha256 is what makes dedupe provable on the next insert.
+            JSON.stringify({ ...(metadata || {}), __content_sha256: content_sha }),
             now,
             now,
             now,
