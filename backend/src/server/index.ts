@@ -117,9 +117,11 @@ start_reflection();
 start_user_summary_reflection();
 
 console.log(`[SERVER] Starting on port ${env.port}`);
-app.listen(env.port, () => {
-    console.log(`[SERVER] Running on http://localhost:${env.port}`);
+const on_listen = () => {
+    console.log(`[SERVER] Running on http://${env.host || 'localhost'}:${env.port}`);
     sendTelemetry().catch(() => {
         // ignore telemetry failures
     });
-});
+};
+if (env.host) app.listen(env.port, env.host, on_listen);
+else app.listen(env.port, on_listen);
